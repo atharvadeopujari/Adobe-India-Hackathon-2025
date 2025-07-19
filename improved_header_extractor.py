@@ -480,7 +480,8 @@ def main():
     
     # Find test files
     current_dir = Path(__file__).parent
-    test_files = sorted(list(current_dir.glob("file*.pdf")))
+    input_dir=current_dir/"input"
+    test_files = sorted(list(input_dir.glob("file*.pdf")))
     
     if not test_files:
         print("No test files found (file*.pdf)")
