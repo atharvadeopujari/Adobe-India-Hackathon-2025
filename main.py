@@ -491,8 +491,8 @@ def process_all_test_files() -> Dict[str, Dict]:
     extractor = GroundTruthAlignedExtractor()
     print("✅ Ground truth-aligned extractor initialized")
 
-    # Find test files in the input directory
-    input_dir = Path(__file__).parent / "input"
+    # Find test files in the input directory (Docker container structure)
+    input_dir = Path("./input")
     test_files = sorted(list(input_dir.glob("*.pdf")))
 
     if not test_files:
@@ -504,8 +504,8 @@ def process_all_test_files() -> Dict[str, Dict]:
     print(f"📂 Input directory: {input_dir.absolute()}")
     print()
 
-    # Create output directory
-    output_dir = Path(__file__).parent / "output"
+    # Create output directory (Docker container structure)
+    output_dir = Path("./output")
     output_dir.mkdir(exist_ok=True)
     print(f"📂 Output directory: {output_dir.absolute()}")
     print()
@@ -529,8 +529,7 @@ def process_all_test_files() -> Dict[str, Dict]:
             title = result["title"]
             header_count = len(result.get("outline", []))
 
-            print(
-                f"   ✅ Title: {title[:60]}{'...' if len(title) > 60 else ''}")
+            print(f"   ✅ Title: {title[:60]}{'...' if len(title) > 60 else ''}")
             print(f"   📑 Headers: {header_count}")
             print(f"   💾 Saved to: {output_file.name}")
 
@@ -573,47 +572,7 @@ def process_all_test_files() -> Dict[str, Dict]:
             print(f"   💾 Error result saved to: {output_file.name}")
             print()
 
-    # # Save combined results
-    # combined_output_file = output_dir / "combined_results.json"
-    # with open(combined_output_file, 'w', encoding='utf-8') as f:
-    #     json.dump(results, f, indent=2, ensure_ascii=False)
-
-    # print(f"💾 Combined results saved to {combined_output_file}")
-    # print(f"📁 Individual JSON files saved in: {output_dir.absolute()}")
-
-    # Compare with ground truth if available
-    if os.path.exists("Ground_Truth.json"):
-        print("\n📊 GROUND TRUTH COMPARISON:")
-        print("-" * 40)
-
-        with open("Ground_Truth.json", 'r', encoding='utf-8') as f:
-            ground_truth = json.load(f)
-
-        total_gt = 0
-        total_ours = 0
-        exact_matches = 0
-
-        for filename in sorted(results.keys()):
-            if filename in ground_truth:
-                gt_headers = len(ground_truth[filename].get("outline", []))
-                our_headers = len(results[filename].get("outline", []))
-
-                total_gt += gt_headers
-                total_ours += our_headers
-
-                if gt_headers == our_headers:
-                    exact_matches += 1
-
-                match_symbol = "✅" if our_headers == gt_headers else "⚠️"
-                print(
-                    f"{match_symbol} {filename}: GT={gt_headers}, Ours={our_headers}")
-
-        print(f"\n📈 Overall Accuracy:")
-        print(f"Exact matches: {exact_matches}/{len(results)} files")
-        print(f"Total headers: GT={total_gt}, Ours={total_ours}")
-        print(
-            f"Header detection rate: {(total_ours/total_gt)*100:.1f}%" if total_gt > 0 else "N/A")
-
+    print(f"📁 Individual JSON files saved in: {output_dir.absolute()}")
     return results
 
 
@@ -634,8 +593,8 @@ def main():
             print(f"Files processed: {len(results)}")
             print(f"Success rate: {successful_files}/{len(results)}")
             print(f"Total headers found: {total_headers}")
-            print(
-                f"Average headers per file: {total_headers/len(results):.1f}")
+            if len(results) > 0:
+                print(f"Average headers per file: {total_headers/len(results):.1f}")
 
         return results
 
