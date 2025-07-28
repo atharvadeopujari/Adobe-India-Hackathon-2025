@@ -1,0 +1,35 @@
+# Ignore unnecessary files for Docker build
+.git
+.gitignore
+*.md
+README*
+.DS_Store
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+.env
+.venv
+venv/
+env/
+
+# Don't include input/output directories in the image
+# (they will be mounted at runtime)
+input/
+output/
+
+# Don't include test files and results
+*.pdf
+*.json
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+Problem Statement.pdf

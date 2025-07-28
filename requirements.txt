@@ -1,0 +1,5 @@
+# Core PDF processing library
+PyMuPDF==1.23.14
+
+# Path handling utilities (for older Python compatibility)
+pathlib2==2.3.7
