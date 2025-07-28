@@ -25,15 +25,12 @@ This project implements an intelligent document header extraction system that us
 
 1. **Build the Docker image:**
    ```bash
-   docker build --platform linux/amd64 -t mysolutionname:somerandomidentifier .   
+   docker build --platform linux/amd64 -t mysolutionname:somerandomidentifier .
+   docker run --rm -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output --network none mysolutionname:somerandomidentifier
    ```
 
-2. **Run with your PDF files:**
-   ```bash
-  docker run --rm -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output --network none mysolutionname:somerandomidentifier
-   ```
 
-3. **Check results:**
+2. **Check results:**
    ```bash
    ls output/  # JSON files with extracted headers
    ```
