@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import fitz  # PyMuPDF
+from multilingual_support import MultilingualTextProcessor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,11 +27,13 @@ class GroundTruthAlignedExtractor:
     def __init__(self):
         """Initialize the extractor"""
         # No hardcoded keywords - analyze document structure instead
-        pass
+        # Initialize multilingual text processor for cross-language support
+        self.multilingual_processor = MultilingualTextProcessor()
+        logger.info("Initialized multilingual header extractor")
 
     def extract_structure(self, pdf_path: str) -> Dict[str, any]:
         """
-        Extract document structure using generalized layout analysis
+        Extract document structure using generalized layout analysis with multilingual support
 
         Args:
             pdf_path (str): Path to PDF file
@@ -46,6 +49,9 @@ class GroundTruthAlignedExtractor:
 
             # Analyze document structure
             doc_analysis = self._analyze_document_structure(doc)
+            
+            # Store analysis for reporting
+            self._last_analysis = doc_analysis
 
             # Extract title based on structure
             title = self._extract_title_from_structure(doc, doc_analysis)
@@ -75,7 +81,13 @@ class GroundTruthAlignedExtractor:
             'has_hierarchical_structure': False,
             'dominant_font_size': 10.0,
             'title_candidates': [],
-            'potential_headers': []
+            'potential_headers': [],
+            'detected_languages': {},  # Track languages found in document
+            'multilingual_stats': {    # Track multilingual characteristics
+                'scripts': {},
+                'has_mixed_scripts': False,
+                'primary_script': 'unknown'
+            }
         }
 
         # Analyze all pages to understand structure (not just first 5)
@@ -91,6 +103,9 @@ class GroundTruthAlignedExtractor:
                         for span in line.get("spans", []):
                             text = span.get("text", "").strip()
                             if text and len(text) > 1:
+                                # Normalize text for multilingual support
+                                normalized_text = self.multilingual_processor.normalize_text(text)
+                                
                                 font_size = span.get("size", 12)
                                 flags = span.get("flags", 0)
                                 is_bold = bool(flags & 2**4)
@@ -98,6 +113,7 @@ class GroundTruthAlignedExtractor:
 
                                 element = {
                                     'text': text,
+                                    'normalized_text': normalized_text,
                                     'page': page_num + 1,
                                     'font_size': font_size,
                                     'is_bold': is_bold,
@@ -107,6 +123,10 @@ class GroundTruthAlignedExtractor:
                                     'font_name': span.get("font", "")
                                 }
 
+                                # Add language detection info
+                                lang_info = self.multilingual_processor.get_language_info(text)
+                                element['language_info'] = lang_info
+
                                 all_text_elements.append(element)
 
                                 # Track font sizes
@@ -114,85 +134,106 @@ class GroundTruthAlignedExtractor:
                                     analysis['font_sizes'][font_size] += 1
                                 else:
                                     analysis['font_sizes'][font_size] = 1
+                                
+                                # Track detected scripts/languages
+                                script = lang_info['script']
+                                if script in analysis['multilingual_stats']['scripts']:
+                                    analysis['multilingual_stats']['scripts'][script] += 1
+                                else:
+                                    analysis['multilingual_stats']['scripts'][script] = 1
 
         # Determine dominant font size (most common)
         if analysis['font_sizes']:
             analysis['dominant_font_size'] = max(analysis['font_sizes'].keys(),
                                                  key=lambda x: analysis['font_sizes'][x])
 
-        # Analyze document type and structure
-        analysis['document_type'] = self._determine_document_type(
-            all_text_elements)
-        analysis['has_numbered_sections'] = self._has_numbered_sections(
+        # Analyze multilingual characteristics
+        scripts = analysis['multilingual_stats']['scripts']
+        if scripts:
+            # Determine primary script (most common)
+            analysis['multilingual_stats']['primary_script'] = max(scripts.keys(), key=scripts.get)
+            # Check if document has mixed scripts
+            analysis['multilingual_stats']['has_mixed_scripts'] = len([s for s in scripts.keys() if s != 'unknown']) > 1
+            
+            logger.info(f"Detected scripts: {scripts}")
+            logger.info(f"Primary script: {analysis['multilingual_stats']['primary_script']}")
+            logger.info(f"Mixed scripts: {analysis['multilingual_stats']['has_mixed_scripts']}")
+
+        # Analyze document type and structure (now with multilingual awareness)
+        analysis['document_type'] = self._determine_document_type_multilingual(
+            all_text_elements, analysis)
+        analysis['has_numbered_sections'] = self._has_numbered_sections_multilingual(
             all_text_elements)
         analysis['has_hierarchical_structure'] = self._has_hierarchical_structure(
             all_text_elements)
 
-        # Find potential title candidates
+        # Find potential title candidates (multilingual)
         if all_text_elements:
             first_page_elements = [
                 e for e in all_text_elements if e['page'] == 1]
-            analysis['title_candidates'] = self._find_title_candidates(
+            analysis['title_candidates'] = self._find_title_candidates_multilingual(
                 first_page_elements, analysis)
 
-        # Find potential header candidates with more relaxed criteria
-        analysis['potential_headers'] = self._find_potential_headers_relaxed(
+        # Find potential header candidates with multilingual support
+        analysis['potential_headers'] = self._find_potential_headers_multilingual(
             all_text_elements, analysis)
 
         return analysis
 
-    def _determine_document_type(self, text_elements: List[Dict]) -> str:
-        """Determine document type based on content patterns"""
+    def _determine_document_type_multilingual(self, text_elements: List[Dict], analysis: Dict) -> str:
+        """Determine document type based on content patterns with multilingual support"""
         if not text_elements:
             return 'unknown'
 
         # Check for form-like structure (many short labels with colons, form fields)
+        # This works across languages as forms typically use similar structures
         short_labels_with_colons = sum(1 for elem in text_elements
-                                       if len(elem['text']) < 40 and ':' in elem['text'])
-        form_fields = sum(1 for elem in text_elements
-                          if re.match(r'^[A-Z][a-z\s]+:?\s*$', elem['text'].strip())
-                          and len(elem['text']) < 50)
+                                       if len(elem['normalized_text']) < 40 and ':' in elem['text'])
+        
+        # Look for form field patterns (multilingual)
+        form_fields = 0
+        for elem in text_elements:
+            text = elem['normalized_text']
+            # Form patterns that work across scripts
+            if (len(text) < 50 and 
+                (text.endswith(':') or 
+                 re.match(r'^[^\s]+\s*[:\-_]\s*$', text) or
+                 self.multilingual_processor.is_title_case_multilingual(text))):
+                form_fields += 1
 
-        form_ratio = short_labels_with_colons / \
-            len(text_elements) if text_elements else 0
+        form_ratio = short_labels_with_colons / len(text_elements) if text_elements else 0
         field_ratio = form_fields / len(text_elements) if text_elements else 0
 
-        # Check for structured content
-        numbered_items = sum(1 for elem in text_elements
-                             if re.match(r'^\d+\.', elem['text'].strip()))
+        # Check for structured content (multilingual numbering)
+        numbered_items = 0
+        for elem in text_elements:
+            if self.multilingual_processor.extract_multilingual_numbering(elem['text']):
+                numbered_items += 1
 
         # Check for single words/short fragments (table-like)
         single_words = sum(1 for elem in text_elements if len(
-            elem['text'].split()) <= 2)
+            elem['normalized_text'].split()) <= 2)
         table_ratio = single_words / len(text_elements) if text_elements else 0
 
-        # Very specific form detection (file01.pdf should be detected as form)
+        # Document type classification (same logic, multilingual-aware)
         if (form_ratio > 0.25 and field_ratio > 0.15) or (form_ratio > 0.35):
             return 'form'
-        elif len(text_elements) < 100 and table_ratio > 0.5:  # Small docs with many fragments
-            return 'simple_document'  # New category for simple docs like file04/file05
+        elif len(text_elements) < 100 and table_ratio > 0.5:
+            return 'simple_document'
         elif numbered_items > 8:
             return 'structured_document'
-        elif table_ratio > 0.6:  # Very table-heavy
+        elif table_ratio > 0.6:
             return 'table_heavy'
         else:
             return 'document'
 
-    def _has_numbered_sections(self, text_elements: List[Dict]) -> bool:
-        """Check if document has numbered section structure"""
-        numbered_patterns = [
-            r'^\d+\.\s+[A-Za-z]',  # "1. Introduction"
-            r'^\d+\.\d+\s+[A-Za-z]',  # "1.1 Background"
-            r'^\d+\.\d+\.\d+\s+[A-Za-z]',  # "1.1.1 Details"
-        ]
-
+    def _has_numbered_sections_multilingual(self, text_elements: List[Dict]) -> bool:
+        """Check if document has numbered section structure (multilingual)"""
         numbered_count = 0
         for elem in text_elements:
-            text = elem['text'].strip()
-            for pattern in numbered_patterns:
-                if re.match(pattern, text):
-                    numbered_count += 1
-                    break
+            numbering_info = self.multilingual_processor.extract_multilingual_numbering(elem['text'])
+            if numbering_info:
+                numbered_count += 1
 
         return numbered_count >= 3
 
@@ -214,8 +255,8 @@ class GroundTruthAlignedExtractor:
 
         return significant_gaps >= 1
 
-    def _find_title_candidates(self, first_page_elements: List[Dict], analysis: Dict) -> List[Dict]:
-        """Find potential title candidates from first page"""
+    def _find_title_candidates_multilingual(self, first_page_elements: List[Dict], analysis: Dict) -> List[Dict]:
+        """Find potential title candidates from first page with multilingual support"""
         candidates = []
         dominant_size = analysis['dominant_font_size']
 
@@ -224,13 +265,16 @@ class GroundTruthAlignedExtractor:
 
         for elem in sorted_elements[:20]:  # Check more elements
             text = elem['text'].strip()
+            normalized_text = elem['normalized_text']
 
             # Skip very short text but be more permissive
-            if len(text) < 2 or len(text) > 300:
+            if len(normalized_text) < 2 or len(normalized_text) > 300:
                 continue
 
-            # Skip obvious non-titles
-            if re.match(r'^page\s+\d+', text.lower()) or (text.isdigit() and len(text) < 3):
+            # Skip obvious non-titles (multilingual patterns)
+            if (re.match(r'^page\s+\d+', text.lower()) or 
+                (text.isdigit() and len(text) < 3) or
+                re.search(r'\b(page|صفحة|页|ページ|페이지)\b', normalized_text.lower())):
                 continue
 
             score = 0
@@ -254,20 +298,30 @@ class GroundTruthAlignedExtractor:
                 score += 1
 
             # Length bonus
-            if 5 <= len(text) <= 150:
+            if 5 <= len(normalized_text) <= 150:
+                score += 1
+
+            # Multilingual title patterns
+            lang_info = elem.get('language_info', {})
+            if lang_info.get('is_title_case') or lang_info.get('is_all_caps'):
+                score += 2
+
+            # Header keyword bonus (multilingual)
+            if self.multilingual_processor.is_multilingual_header_keyword(text):
                 score += 1
 
             if score >= 2:  # Lower threshold
                 candidates.append({
                     'text': text,
                     'score': score,
-                    'element': elem
+                    'element': elem,
+                    'language_info': lang_info
                 })
 
         return sorted(candidates, key=lambda x: -x['score'])
 
-    def _find_potential_headers_relaxed(self, text_elements: List[Dict], analysis: Dict) -> List[Dict]:
-        """Find potential headers with more relaxed criteria to match ground truth"""
+    def _find_potential_headers_multilingual(self, text_elements: List[Dict], analysis: Dict) -> List[Dict]:
+        """Find potential headers with multilingual support to match ground truth"""
         headers = []
         dominant_size = analysis['dominant_font_size']
         doc_type = analysis['document_type']
@@ -278,106 +332,58 @@ class GroundTruthAlignedExtractor:
 
         for elem in text_elements:
             text = elem['text'].strip()
+            normalized_text = elem['normalized_text']
 
             # More permissive length requirements
-            if len(text) < 2 or len(text) > 200:
+            if len(normalized_text) < 2 or len(normalized_text) > 200:
                 continue
 
-            # Skip obvious non-headers but be more permissive
-            if text.isdigit() and len(text) < 3:
-                continue
-            if re.match(r'^page\s+\d+', text.lower()):
+            # Skip obvious non-headers but be more permissive (multilingual)
+            if (text.isdigit() and len(text) < 3) or \
+               re.search(r'\b(page|صفحة|页|ページ|페이지)\b', normalized_text.lower()):
                 continue
 
-            # Calculate header likelihood with relaxed criteria
-            header_score = self._calculate_header_score_relaxed(elem, analysis)
+            # Calculate header likelihood with multilingual scoring
+            header_score = self.multilingual_processor.calculate_multilingual_header_score(
+                text, elem['font_size'], elem['is_bold'], dominant_size)
 
             if header_score >= 0.5:  # Higher threshold for better precision
-                level = self._determine_header_level(elem, analysis)
+                level = self._determine_header_level_multilingual(elem, analysis)
 
                 headers.append({
                     'text': text,
                     'page': elem['page'],
                     'level': level,
                     'score': header_score,
-                    'element': elem
+                    'element': elem,
+                    'language_info': elem.get('language_info', {})
                 })
 
         return headers
 
-    def _calculate_header_score_relaxed(self, elem: Dict, analysis: Dict) -> float:
-        """Calculate likelihood that a text element is a header - more targeted"""
-        score = 0.0
-        text = elem['text'].strip()
-        dominant_size = analysis['dominant_font_size']
-
-        # Font size factor - be more selective
-        size_ratio = elem['font_size'] / dominant_size
-        if size_ratio >= 1.5:
-            score += 0.5
-        elif size_ratio >= 1.3:
-            score += 0.4
-        elif size_ratio >= 1.2:
-            score += 0.3
-        elif size_ratio >= 1.1:
-            score += 0.2
-        else:
-            score -= 0.1  # Penalize same size as body text
-
-        # Bold bonus - very important for headers
-        if elem['is_bold']:
-            score += 0.4
-
-        # Strong structural patterns (these are very likely headers)
-        if re.match(r'^\d+\.\s+[A-Za-z]', text):  # "1. Title"
-            score += 0.6
-        elif re.match(r'^\d+\.\d+\s+[A-Za-z]', text):  # "1.1 Subtitle"
-            score += 0.5
-        elif re.match(r'^\d+\.\d+\.\d+\s+[A-Za-z]', text):  # "1.1.1 Details"
-            score += 0.4
-
-        # Title-like patterns
-        elif re.match(r'^[A-Z][A-Z\s]*$', text) and 5 <= len(text) <= 50:  # ALL CAPS titles
-            score += 0.4
-        elif re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)*\s*$', text) and len(text) <= 80:  # Title Case
-            score += 0.3
-        # Section labels ending with colon
-        elif text.endswith(':') and len(text) <= 60:
-            score += 0.3
-
-        # Common header words (but not hardcoded keywords)
-        if re.search(r'\b(Introduction|Background|Summary|Conclusion|References|Acknowledgement|Overview|Table of Contents)\b', text, re.IGNORECASE):
-            score += 0.3
-
-        # Penalize certain patterns that are unlikely to be headers
-        if re.search(r'\b(page|copyright|version|\d{4}|\©)\b', text.lower()):
-            score -= 0.3
-        if len(text) > 120:  # Very long text is probably not a header
-            score -= 0.2
-        if text.count(',') > 2:  # Too many commas suggests body text
-            score -= 0.2
-
-        # Position factors
-        if elem['x_pos'] < 100:  # Left-aligned
-            score += 0.1
-
-        return max(0.0, min(score, 1.0))  # Ensure score is between 0 and 1
-
-    def _determine_header_level(self, elem: Dict, analysis: Dict) -> str:
-        """Determine header level based on structure"""
+    def _determine_header_level_multilingual(self, elem: Dict, analysis: Dict) -> str:
+        """Determine header level based on structure with multilingual support"""
         text = elem['text'].strip()
         dominant_size = analysis['dominant_font_size']
         size_ratio = elem['font_size'] / dominant_size
 
-        # Pattern-based level assignment
-        if re.match(r'^\d+\.\s+', text):
-            return "H1"
-        elif re.match(r'^\d+\.\d+\s+', text):
-            return "H2"
-        elif re.match(r'^\d+\.\d+\.\d+\s+', text):
-            return "H3"
-        elif re.match(r'^\d+\.\d+\.\d+\.\d+\s+', text):
-            return "H4"
+        # Check for multilingual numbering patterns first
+        numbering_info = self.multilingual_processor.extract_multilingual_numbering(text)
+        if numbering_info:
+            numbering = numbering_info['numbering']
+            # Count dots/levels in numbering
+            if '.' in numbering:
+                dots = numbering.count('.')
+                if dots == 1:
+                    return "H1"
+                elif dots == 2:
+                    return "H2"
+                elif dots == 3:
+                    return "H3"
+                else:
+                    return "H4"
+            else:
+                return "H1"  # Simple numbering like "1)", "A)", etc.
 
         # Size-based level assignment - more generous
         if size_ratio >= 1.6 or (size_ratio >= 1.4 and elem['is_bold']):
@@ -415,7 +421,7 @@ class GroundTruthAlignedExtractor:
             return self._clean_filename(doc.name if hasattr(doc, 'name') else "document")
 
     def _extract_headers_from_structure(self, doc, analysis: Dict) -> List[Dict]:
-        """Extract headers based on structural analysis"""
+        """Extract headers based on structural analysis with multilingual support"""
         try:
             doc_type = analysis.get('document_type', 'unknown')
 
@@ -440,23 +446,31 @@ class GroundTruthAlignedExtractor:
                                     key=lambda x: (x['page'], -x['score']))
 
             for header in sorted_headers:
-                text_key = header['text'].lower().strip()
+                text = header['text']
+                # Use normalized text for deduplication
+                normalized_key = self.multilingual_processor.normalize_text(text.lower())
 
                 # Skip duplicates
-                if text_key in seen_texts:
+                if normalized_key in seen_texts:
                     continue
 
                 # Skip very short texts
-                if len(text_key) < 2:
+                if len(normalized_key) < 2:
                     continue
 
-                seen_texts.add(text_key)
+                seen_texts.add(normalized_key)
 
-                filtered_headers.append({
+                header_info = {
                     'level': header['level'],
-                    'text': header['text'],
+                    'text': text,
                     'page': header['page']
-                })
+                }
+
+                # Add language information if available
+                if 'language_info' in header:
+                    header_info['language'] = header['language_info'].get('script', 'unknown')
+
+                filtered_headers.append(header_info)
 
             # Reasonable limit based on ground truth max
             return filtered_headers[:40]
@@ -483,13 +497,13 @@ class GroundTruthAlignedExtractor:
 
 
 def process_all_test_files() -> Dict[str, Dict]:
-    """Process all test PDF files using ground truth aligned extraction"""
-    print("🎯 Ground Truth-Aligned Header Extraction")
-    print("=" * 50)
+    """Process all test PDF files using ground truth aligned extraction with multilingual support"""
+    print("� Multilingual Ground Truth-Aligned Header Extraction")
+    print("=" * 55)
 
     # Initialize extractor
     extractor = GroundTruthAlignedExtractor()
-    print("✅ Ground truth-aligned extractor initialized")
+    print("✅ Multilingual ground truth-aligned extractor initialized")
 
     # Find test files in the input directory (Docker container structure)
     input_dir = Path("./input")
@@ -511,6 +525,7 @@ def process_all_test_files() -> Dict[str, Dict]:
     print()
 
     results = {}
+    language_stats = {}
 
     for pdf_file in test_files:
         print(f"🔍 Processing {pdf_file.name}...")
@@ -533,22 +548,43 @@ def process_all_test_files() -> Dict[str, Dict]:
             print(f"   📑 Headers: {header_count}")
             print(f"   💾 Saved to: {output_file.name}")
 
+            # Show language detection info if available
+            if hasattr(extractor, '_last_analysis') and extractor._last_analysis:
+                analysis = extractor._last_analysis
+                scripts = analysis.get('multilingual_stats', {}).get('scripts', {})
+                if scripts:
+                    detected_scripts = [s for s in scripts.keys() if s != 'unknown' and scripts[s] > 0]
+                    if detected_scripts:
+                        print(f"   🌍 Detected scripts: {', '.join(detected_scripts)}")
+                        # Track global language statistics
+                        for script in detected_scripts:
+                            language_stats[script] = language_stats.get(script, 0) + 1
+
             if result.get("outline"):
                 # Show header levels distribution
                 levels = {}
                 sample_headers = []
+                languages_in_headers = set()
 
                 for i, header in enumerate(result["outline"]):
                     level = header["level"]
                     levels[level] = levels.get(level, 0) + 1
 
-                    if i < 3:  # Show first 3 headers as samples
-                        sample_headers.append(
-                            f"{level}: {header['text'][:40]}{'...' if len(header['text']) > 40 else ''}")
+                    # Track languages in headers
+                    if 'language' in header:
+                        languages_in_headers.add(header['language'])
 
-                level_str = ", ".join(
-                    [f"{k}: {v}" for k, v in sorted(levels.items())])
+                    if i < 3:  # Show first 3 headers as samples
+                        header_text = header['text'][:40]
+                        if len(header['text']) > 40:
+                            header_text += '...'
+                        sample_headers.append(f"{level}: {header_text}")
+
+                level_str = ", ".join([f"{k}: {v}" for k, v in sorted(levels.items())])
                 print(f"   🎯 Levels: {level_str}")
+
+                if languages_in_headers:
+                    print(f"   🗣️  Header languages: {', '.join(sorted(languages_in_headers))}")
 
                 if sample_headers:
                     print(f"   📄 Samples: {'; '.join(sample_headers[:2])}")
@@ -573,11 +609,19 @@ def process_all_test_files() -> Dict[str, Dict]:
             print()
 
     print(f"📁 Individual JSON files saved in: {output_dir.absolute()}")
+    
+    # Show multilingual statistics
+    if language_stats:
+        print(f"\n🌍 MULTILINGUAL STATISTICS:")
+        print(f"Languages/Scripts detected across all documents:")
+        for script, count in sorted(language_stats.items(), key=lambda x: -x[1]):
+            print(f"  {script}: {count} document(s)")
+    
     return results
 
 
 def main():
-    """Main function to run ground truth aligned extraction"""
+    """Main function to run multilingual ground truth aligned extraction"""
     try:
         # Run the extraction
         results = process_all_test_files()
@@ -595,6 +639,8 @@ def main():
             print(f"Total headers found: {total_headers}")
             if len(results) > 0:
                 print(f"Average headers per file: {total_headers/len(results):.1f}")
+            print(f"🌍 Multilingual support: ✅ Enabled")
+            print(f"🔤 Supported scripts: Latin, Cyrillic, Arabic, Chinese, Japanese, Korean, Devanagari, Hebrew, Thai")
 
         return results
 
