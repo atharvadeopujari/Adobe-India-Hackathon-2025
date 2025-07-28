@@ -23,7 +23,7 @@ This project implements an intelligent document header extraction system that us
 
 ### 🐳 Docker Usage (Recommended)
 
-1. **Build the Docker image:**
+1. **Build and Run the Docker image:**
    ```bash
    docker build --platform linux/amd64 -t mysolutionname:somerandomidentifier .
    docker run --rm -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output --network none mysolutionname:somerandomidentifier
